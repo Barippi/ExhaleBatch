@@ -423,12 +423,51 @@ public partial class MainWindow : Window
             using var src = TagLib.File.Create(srcFile);
             using var dest = TagLib.File.Create(destFile);
 
-            src.Tag.CopyTo(dest.Tag, true);
+            var sTag = src.Tag;
+            var dTag = dest.Tag;
+
+            // 1. 基本テキスト・数値タグを明示的に転送
+            if (!string.IsNullOrWhiteSpace(sTag.Title)) dTag.Title = sTag.Title;
+            if (sTag.Performers != null && sTag.Performers.Length > 0) dTag.Performers = sTag.Performers;
+            if (sTag.AlbumArtists != null && sTag.AlbumArtists.Length > 0) dTag.AlbumArtists = sTag.AlbumArtists;
+            if (!string.IsNullOrWhiteSpace(sTag.Album)) dTag.Album = sTag.Album;
+            if (!string.IsNullOrWhiteSpace(sTag.Comment)) dTag.Comment = sTag.Comment;
+            if (sTag.Genres != null && sTag.Genres.Length > 0) dTag.Genres = sTag.Genres;
+
+            if (sTag.Year > 0) dTag.Year = sTag.Year;
+            if (sTag.Track > 0) dTag.Track = sTag.Track;
+            if (sTag.TrackCount > 0) dTag.TrackCount = sTag.TrackCount;
+            if (sTag.Disc > 0) dTag.Disc = sTag.Disc;
+            if (sTag.DiscCount > 0) dTag.DiscCount = sTag.DiscCount;
+
+            // 2. カバーアートワークの確実な再構成と転送
+            if (sTag.Pictures != null && sTag.Pictures.Length > 0)
+            {
+                var pictureList = new List<TagLib.IPicture>();
+                foreach (var pic in sTag.Pictures)
+                {
+                    if (pic.Data != null && pic.Data.Data.Length > 0)
+                    {
+                        // 汎用 Picture オブジェクトとしてバイト列を再生成して MP4 に適合させる
+                        var newPic = new TagLib.Picture(new TagLib.ByteVector(pic.Data.Data))
+                        {
+                            Type = pic.Type,
+                            MimeType = string.IsNullOrEmpty(pic.MimeType) ? "image/jpeg" : pic.MimeType,
+                            Description = pic.Description ?? string.Empty
+                        };
+                        pictureList.Add(newPic);
+                    }
+                }
+                dTag.Pictures = pictureList.ToArray();
+            }
+
+            // 保存実行
             dest.Save();
+            AppendLog($"[メタデータ反映] {Path.GetFileName(srcFile)} のタグを正常に引き継ぎました。");
         }
         catch (Exception ex)
         {
-            AppendLog($"[メタデータ警告] {ex.Message}");
+            AppendLog($"[メタデータ警告] {Path.GetFileName(srcFile)}: {ex.Message}");
         }
     }
 
