@@ -12,6 +12,7 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<EncodeItem> _queue = new();
     private static readonly string[] SupportedExtensions = { ".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aiff", ".wma", ".aac" };
+    private static readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png", ".webp", ".bmp" };
     
     private CancellationTokenSource? _cts;
     private string? _customOutputDirectory = null;
@@ -275,6 +276,7 @@ public partial class MainWindow : Window
                     {
                         await RunEncodingPipelineAsync(item.SourcePath, item.OutputPath, preset, token);
                         CopyMetadata(item.SourcePath, item.OutputPath);
+                        CopyFolderImages(item.SourcePath, item.OutputPath);
 
                         item.Status = EncodeStatus.Completed;
                         item.StatusMessage = "完了";
@@ -427,6 +429,43 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog($"[メタデータ警告] {ex.Message}");
+        }
+    }
+
+    private void CopyFolderImages(string srcFilePath, string destFilePath)
+    {
+        try
+        {
+            string? srcDir = Path.GetDirectoryName(srcFilePath);
+            string? destDir = Path.GetDirectoryName(destFilePath);
+
+            if (string.IsNullOrEmpty(srcDir) || string.IsNullOrEmpty(destDir) || !Directory.Exists(srcDir))
+            {
+                return;
+            }
+
+            if (string.Equals(srcDir, destDir, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var imageFiles = Directory.EnumerateFiles(srcDir, "*.*", SearchOption.TopDirectoryOnly)
+                                      .Where(f => ImageExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()));
+
+            foreach (var imgPath in imageFiles)
+            {
+                string destImgPath = Path.Combine(destDir, Path.GetFileName(imgPath));
+
+                if (!File.Exists(destImgPath))
+                {
+                    File.Copy(imgPath, destImgPath, overwrite: false);
+                    AppendLog($"[画像コピー] {Path.GetFileName(imgPath)} を出力フォルダにコピーしました。");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[画像コピー警告] {ex.Message}");
         }
     }
 
