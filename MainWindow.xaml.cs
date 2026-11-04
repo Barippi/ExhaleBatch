@@ -350,69 +350,61 @@ public partial class MainWindow : Window
 
     private async Task RunEncodingPipelineAsync(string inputPath, string outputPath, string preset, CancellationToken token)
     {
-        string tempWav = Path.Combine(Path.GetDirectoryName(outputPath)!, $"_temp_{Guid.NewGuid():N}.wav");
+        string ffmpegExe = ResolveBinaryPath("ffmpeg.exe");
+        string exhaleExe = ResolveBinaryPath("exhale.exe");
+
+        // UsualAudioConverter と同様に cmd /c でシェルパイプラインを処理
+        // exhale は入力ファイル引数を省略すると標準入力を受け付けます
+        string cmdLine = $"/c \"\"{ffmpegExe}\" -nostdin -y -v error -i \"{inputPath}\" -c:a pcm_s16le -f wav - | \"{exhaleExe}\" {preset} \"{outputPath}\"\"";
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = cmdLine,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        using var proc = new Process { StartInfo = startInfo };
+
+        proc.OutputDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) AppendLog(e.Data); };
+        proc.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) AppendLog(e.Data); };
+
+        using var reg = token.Register(() =>
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+        });
+
+        proc.Start();
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
 
         try
         {
-            var ffmpegInfo = new ProcessStartInfo
+            await proc.WaitForExitAsync(token);
+
+            if (proc.ExitCode != 0)
             {
-                FileName = ResolveBinaryPath("ffmpeg.exe"),
-                Arguments = $"-nostdin -y -v error -i \"{inputPath}\" -c:a pcm_s16le \"{tempWav}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using (var procFfmpeg = new Process { StartInfo = ffmpegInfo })
-            {
-                procFfmpeg.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) AppendLog($"[FFmpeg] {e.Data}"); };
-                procFfmpeg.Start();
-                procFfmpeg.BeginErrorReadLine();
-
-                using var reg = token.Register(() => { try { if (!procFfmpeg.HasExited) procFfmpeg.Kill(); } catch { } });
-                await procFfmpeg.WaitForExitAsync(token);
-
-                if (procFfmpeg.ExitCode != 0)
-                {
-                    throw new InvalidOperationException($"FFmpegデコード失敗 (Code: {procFfmpeg.ExitCode})");
-                }
-            }
-
-            var exhaleInfo = new ProcessStartInfo
-            {
-                FileName = ResolveBinaryPath("exhale.exe"),
-                Arguments = $"{preset} \"{tempWav}\" \"{outputPath}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using (var procExhale = new Process { StartInfo = exhaleInfo })
-            {
-                procExhale.OutputDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) AppendLog(e.Data); };
-                procExhale.ErrorDataReceived += (s, e) => { if (!string.IsNullOrEmpty(e.Data)) AppendLog(e.Data); };
-
-                procExhale.Start();
-                procExhale.BeginOutputReadLine();
-                procExhale.BeginErrorReadLine();
-
-                using var reg = token.Register(() => { try { if (!procExhale.HasExited) procExhale.Kill(); } catch { } });
-                await procExhale.WaitForExitAsync(token);
-
-                if (procExhale.ExitCode != 0)
-                {
-                    throw new InvalidOperationException($"exhaleエンコード失敗 (Code: {procExhale.ExitCode})");
-                }
+                throw new InvalidOperationException($"変換パイプライン失敗 (ExitCode: {proc.ExitCode})");
             }
         }
-        finally
+        catch (OperationCanceledException)
         {
-            if (File.Exists(tempWav))
+            if (File.Exists(outputPath))
             {
-                try { File.Delete(tempWav); } catch { }
+                try { File.Delete(outputPath); } catch { }
             }
+            throw;
+        }
+        catch (Exception)
+        {
+            if (File.Exists(outputPath))
+            {
+                try { File.Delete(outputPath); } catch { }
+            }
+            throw;
         }
     }
 
@@ -426,7 +418,6 @@ public partial class MainWindow : Window
             var sTag = src.Tag;
             var dTag = dest.Tag;
 
-            // 1. 基本テキスト・数値タグを明示的に転送
             if (!string.IsNullOrWhiteSpace(sTag.Title)) dTag.Title = sTag.Title;
             if (sTag.Performers != null && sTag.Performers.Length > 0) dTag.Performers = sTag.Performers;
             if (sTag.AlbumArtists != null && sTag.AlbumArtists.Length > 0) dTag.AlbumArtists = sTag.AlbumArtists;
@@ -440,7 +431,6 @@ public partial class MainWindow : Window
             if (sTag.Disc > 0) dTag.Disc = sTag.Disc;
             if (sTag.DiscCount > 0) dTag.DiscCount = sTag.DiscCount;
 
-            // 2. カバーアートワークの確実な再構成と転送
             if (sTag.Pictures != null && sTag.Pictures.Length > 0)
             {
                 var pictureList = new List<TagLib.IPicture>();
@@ -448,7 +438,6 @@ public partial class MainWindow : Window
                 {
                     if (pic.Data != null && pic.Data.Data.Length > 0)
                     {
-                        // 汎用 Picture オブジェクトとしてバイト列を再生成して MP4 に適合させる
                         var newPic = new TagLib.Picture(new TagLib.ByteVector(pic.Data.Data))
                         {
                             Type = pic.Type,
@@ -461,7 +450,6 @@ public partial class MainWindow : Window
                 dTag.Pictures = pictureList.ToArray();
             }
 
-            // 保存実行
             dest.Save();
             AppendLog($"[メタデータ反映] {Path.GetFileName(srcFile)} のタグを正常に引き継ぎました。");
         }
